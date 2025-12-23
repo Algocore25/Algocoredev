@@ -4,6 +4,7 @@ import { database } from "../firebase";
 import { useParams, useNavigate } from "react-router-dom";
 import CodePage from "./CodePage";
 import MCQPage from "./MCQPage";
+import CaseStudyPage from "./CaseStudyPage";
 import LoadingPage from "./LoadingPage";
 import CpuApp from "./Visual/Cpu/CpuApp";
 
@@ -124,6 +125,13 @@ const DynamicComponent = () => {
       })
     }
 
+    if (questionId === "test-case-study") {
+      setData({
+        type: "CaseStudy",
+        questionname: "Sample Case Study Analysis"
+      })
+    }
+
 
     setLoading(false);
 
@@ -187,6 +195,7 @@ const DynamicComponent = () => {
       {data.type === "Programming" && <CodePage data={data} navigation={navigationProps} />}
       {data.type === "MCQ" && <MCQPage data={data} />}
       {data.type === "CpuVisual" && <CpuApp />}
+      {data.type === "CaseStudy" && <CaseStudyPage data={data} navigation={navigationProps} />}
       {/* Add more conditional components as needed */}
 
       {/* Navigation Buttons - Only show for MCQ since CodePage handles its own */}
@@ -195,10 +204,9 @@ const DynamicComponent = () => {
           <button
             onClick={handlePreviousQuestion}
             // disabled={currentQuestionIndex === 0}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium text-sm transition-all duration-200 shadow-lg ${
-              currentQuestionIndex === 0
-                ? 'bg-gray-200 dark:bg-gray-700 text-gray-400 dark:text-gray-500 cursor-not-allowed'
-                : 'bg-blue-600 hover:bg-blue-700 text-white hover:shadow-xl transform hover:scale-105'
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium text-sm transition-all duration-200 shadow-lg ${currentQuestionIndex === 0
+              ? 'bg-gray-200 dark:bg-gray-700 text-gray-400 dark:text-gray-500 cursor-not-allowed'
+              : 'bg-blue-600 hover:bg-blue-700 text-white hover:shadow-xl transform hover:scale-105'
               }`}
           >
             <NavigationIcons.ChevronLeft />
@@ -208,10 +216,9 @@ const DynamicComponent = () => {
           <button
             onClick={handleNextQuestion}
             // disabled={currentQuestionIndex === allQuestions.length - 1}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium text-sm transition-all duration-200 shadow-lg ${
-              currentQuestionIndex === allQuestions.length - 1
-                ? 'bg-gray-200 dark:bg-gray-700 text-gray-400 dark:text-gray-500 cursor-not-allowed'
-                : 'bg-blue-600 hover:bg-blue-700 text-white hover:shadow-xl transform hover:scale-105'
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium text-sm transition-all duration-200 shadow-lg ${currentQuestionIndex === allQuestions.length - 1
+              ? 'bg-gray-200 dark:bg-gray-700 text-gray-400 dark:text-gray-500 cursor-not-allowed'
+              : 'bg-blue-600 hover:bg-blue-700 text-white hover:shadow-xl transform hover:scale-105'
               }`}
           >
             {currentQuestionIndex === allQuestions.length - 1 ? 'Next Chapter' : 'Next'}

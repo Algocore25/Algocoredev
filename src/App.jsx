@@ -1,5 +1,4 @@
 import React, { Suspense, lazy, useEffect } from 'react';
-// Force bundle refresh v2
 import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 
@@ -26,7 +25,7 @@ const CoursePage = lazy(() => import('./pages/CoursePage'));
 const AboutPage = lazy(() => import('./pages/AboutPage'));
 const ContactPage = lazy(() => import('./pages/ContactPage'));
 const LoginPage = lazy(() => import('./pages/LoginPage'));
-const MLCoursePage = lazy(() => import('./pages/MLCoursePage'));
+const CaseStudyPage = lazy(() => import('./pages/CaseStudyPage'));
 
 import { VideoProctor } from './LiveProctoring/components/VideoProctor';
 
@@ -39,8 +38,10 @@ const CopyPasteGuard = () => {
   const { pathname } = useLocation();
 
   useEffect(() => {
+    const isCaseStudy = pathname.includes('test-case-study') || pathname.includes('problem');
     const requiresAdmin = /^\/(admin(|monitor|results)|testedit|exammonitor|adminresults)(\/|$)/i.test(pathname);
-    if (requiresAdmin) {
+
+    if (requiresAdmin || isCaseStudy) {
       return;
     }
 
@@ -84,11 +85,10 @@ function App() {
               <Route path="/compiler" element={<CompilerPage />} />
               <Route path="/courses" element={<CoursesPage />} />
               <Route path="/course/:course" element={<CoursePage />} />
-              <Route path="/ml-course" element={<MLCoursePage />} />
-              <Route path="/ml-course/:questionId" element={<MLCoursePage />} />
               <Route path="/about" element={<AboutPage />} />
               <Route path="/contact" element={<ContactPage />} />
               <Route path="/login" element={<LoginPage />} />
+              <Route path="/test-case-study" element={<CaseStudyPage data={{}} />} />
               <Route path="*" element={<NotFoundPage />} />
 
               <Route path="/proctoring" element={<VideoProctor />} />
