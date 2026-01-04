@@ -4,7 +4,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useTheme } from '../context/ThemeContext';
 import { useParams } from "react-router-dom";
 import { database } from "../firebase";
-import { ref, get, set } from "firebase/database";
+import { ref, get, set, push, remove } from "firebase/database";
 import { useAuth } from '../context/AuthContext';
 import { ToastContainer, toast } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
@@ -86,6 +86,11 @@ const Icons = {
         <svg className={className || "w-4 h-4"} fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
         </svg>
+    ),
+    X: ({ className }) => (
+        <svg className={className || "w-4 h-4"} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+        </svg>
     )
 };
 
@@ -103,8 +108,41 @@ const CaseStudyPage = ({ data, navigation }) => {
     const hasInitializedRef = useRef(false);
     const { theme } = useTheme();
     const { user } = useAuth();
-    const { course, questionId } = useParams();
+    const params = useParams();
+    // Default values for testing when route params are missing
+    const course = params.course || 'test_course';
+    const questionId = params.questionId || 'case_study_1';
     const saveTimeoutRef = useRef(null);
+    const [activeFormats, setActiveFormats] = useState({
+        bold: false,
+        italic: false,
+        element: 'p',
+        ul: false,
+        ol: false,
+        color: '#000000'
+    });
+
+    // Helper to convert RGB to Hex
+    const rgbToHex = (rgb) => {
+        if (!rgb) return '#000000';
+        // Check if already hex
+        if (rgb.startsWith('#')) return rgb;
+        // Parse rgb(r, g, b)
+        const sep = rgb.indexOf(",") > -1 ? "," : " ";
+        const rgbValues = rgb.substr(4).split(")")[0].split(sep);
+
+        if (rgbValues.length < 3) return '#000000';
+
+        let r = (+rgbValues[0]).toString(16),
+            g = (+rgbValues[1]).toString(16),
+            b = (+rgbValues[2]).toString(16);
+
+        if (r.length < 2) r = "0" + r;
+        if (g.length < 2) g = "0" + g;
+        if (b.length < 2) b = "0" + b;
+
+        return "#" + r + g + b;
+    };
 
     // Use PDF URLs from props or fallback to placeholders
     const pdfUrls = [
@@ -124,7 +162,8 @@ const CaseStudyPage = ({ data, navigation }) => {
                 // Sanitize path for Firebase
                 const safeCourse = course.replace(/[.#$/\[\]]/g, '_');
                 const safeQuestionId = questionId.replace(/[.#$/\[\]]/g, '_');
-                const textKey = `savedText/${user.uid}/${safeCourse}/${safeQuestionId}`;
+                // Use a 'current' node under the same structure for the active draft
+                const textKey = `Casestudies/${user.uid}/${safeCourse}/${safeQuestionId}/current`;
 
                 try {
                     const snapshot = await get(ref(database, textKey));
@@ -162,7 +201,7 @@ const CaseStudyPage = ({ data, navigation }) => {
             if (user && course && questionId) {
                 const safeCourse = course.replace(/[.#$/\[\]]/g, '_');
                 const safeQuestionId = questionId.replace(/[.#$/\[\]]/g, '_');
-                const textKey = `savedText/${user.uid}/${safeCourse}/${safeQuestionId}`;
+                const textKey = `Casestudies/${user.uid}/${safeCourse}/${safeQuestionId}/current`;
 
                 try {
                     await set(ref(database, textKey), newText);
@@ -174,6 +213,7 @@ const CaseStudyPage = ({ data, navigation }) => {
                 }
             }
         }, 1000);
+
     };
 
     // Load history from Firebase
@@ -182,7 +222,7 @@ const CaseStudyPage = ({ data, navigation }) => {
             if (user && course && questionId) {
                 const safeCourse = course.replace(/[.#$/\[\]]/g, '_');
                 const safeQuestionId = questionId.replace(/[.#$/\[\]]/g, '_');
-                const historyKey = `textHistory/${user.uid}/${safeCourse}/${safeQuestionId}`;
+                const historyKey = `Casestudies/${user.uid}/${safeCourse}/${safeQuestionId}`;
 
                 try {
                     const snapshot = await get(ref(database, historyKey));
@@ -207,12 +247,14 @@ const CaseStudyPage = ({ data, navigation }) => {
 
         const safeCourse = course.replace(/[.#$/\[\]]/g, '_');
         const safeQuestionId = questionId.replace(/[.#$/\[\]]/g, '_');
-        const historyKey = `textHistory/${user.uid}/${safeCourse}/${safeQuestionId}`;
+        const historyKey = `Casestudies/${user.uid}/${safeCourse}/${safeQuestionId}`;
         const timestamp = Date.now();
-        const newVersionKey = ref(database, historyKey).push().key;
 
         try {
-            await set(ref(database, `${historyKey}/${newVersionKey}`), {
+            const newVersionRef = push(ref(database, historyKey));
+            const newVersionKey = newVersionRef.key;
+
+            await set(newVersionRef, {
                 text: text,
                 timestamp: timestamp
             });
@@ -226,6 +268,25 @@ const CaseStudyPage = ({ data, navigation }) => {
         }
     };
 
+    const deleteVersion = async (e, versionId) => {
+        e.stopPropagation(); // Prevent restoring the version when clicking delete
+
+        if (!window.confirm("Are you sure you want to delete this version?")) return;
+
+        const safeCourse = course.replace(/[.#$/\[\]]/g, '_');
+        const safeQuestionId = questionId.replace(/[.#$/\[\]]/g, '_');
+        const versionPath = `Casestudies/${user.uid}/${safeCourse}/${safeQuestionId}/${versionId}`;
+
+        try {
+            await remove(ref(database, versionPath));
+            setHistory(prev => prev.filter(item => item.id !== versionId));
+            toast.success("Version deleted");
+        } catch (error) {
+            console.error("Error deleting version:", error);
+            toast.error("Failed to delete version");
+        }
+    };
+
     const restoreVersion = (versionText) => {
         setText(versionText);
         if (editorRef.current) {
@@ -233,6 +294,38 @@ const CaseStudyPage = ({ data, navigation }) => {
         }
         handleTextChange(); // Trigger save to main ref
         toast.info("Version restored!");
+    };
+
+    const checkFormats = () => {
+        if (!document) return;
+
+        try {
+            const bold = document.queryCommandState('bold');
+            const italic = document.queryCommandState('italic');
+            const ul = document.queryCommandState('insertUnorderedList');
+            const ol = document.queryCommandState('insertOrderedList');
+            const blockType = document.queryCommandValue('formatBlock');
+            const foreColor = document.queryCommandValue('foreColor');
+
+            // Normalized block type (browsers can return 'p', 'h2', 'div', etc.)
+            let element = 'p';
+            if (blockType) {
+                const lower = blockType.toLowerCase();
+                if (lower === 'h2') element = 'h2';
+                // Add more mappings if needed
+            }
+
+            setActiveFormats({
+                bold,
+                italic,
+                element: blockType ? blockType.toLowerCase() : 'p',
+                ul,
+                ol,
+                color: rgbToHex(foreColor)
+            });
+        } catch (e) {
+            console.warn("Format check failed:", e);
+        }
     };
 
     const execCommand = (command, value = null) => {
@@ -245,18 +338,26 @@ const CaseStudyPage = ({ data, navigation }) => {
             console.error("Command failed:", e);
         }
         handleTextChange();
+        checkFormats();
     };
 
-    const applyColor = (color) => {
+    const applyColor = (color, isToggleable = false) => {
         if (editorRef.current) {
             editorRef.current.focus();
+        }
+
+        let targetColor = color;
+        // Check if we should toggle off the color (revert to default)
+        // We compare case-insensitive just to be safe, though our activeFormats are usually hex
+        if (isToggleable && activeFormats.color.toLowerCase() === color.toLowerCase()) {
+            targetColor = theme === 'dark' ? '#FFFFFF' : '#000000';
         }
 
         // Enable modern CSS-based styling
         document.execCommand('styleWithCSS', false, true);
 
         // Try execCommand first as it handles complex selections better
-        const success = document.execCommand('foreColor', false, color);
+        const success = document.execCommand('foreColor', false, targetColor);
 
         // Fallback for more robust application
         if (!success) {
@@ -264,7 +365,7 @@ const CaseStudyPage = ({ data, navigation }) => {
             if (selection.rangeCount > 0) {
                 const range = selection.getRangeAt(0);
                 const span = document.createElement('span');
-                span.style.color = color;
+                span.style.color = targetColor;
                 try {
                     range.surroundContents(span);
                 } catch (e) {
@@ -274,6 +375,7 @@ const CaseStudyPage = ({ data, navigation }) => {
         }
 
         handleTextChange();
+        checkFormats();
     };
 
     const handleMouseDown = (e) => {
@@ -376,16 +478,25 @@ const CaseStudyPage = ({ data, navigation }) => {
                                         {history.map((version) => (
                                             <div
                                                 key={version.id}
-                                                className="p-3 border border-gray-100 dark:border-gray-700 rounded-xl hover:border-purple-500 transition-all cursor-pointer group"
+                                                className="p-3 border border-gray-100 dark:border-gray-700 rounded-xl hover:border-purple-500 transition-all cursor-pointer group relative"
                                                 onClick={() => restoreVersion(version.text)}
                                             >
                                                 <div className="flex justify-between items-center mb-1">
                                                     <span className="text-[10px] font-bold text-purple-600 uppercase tracking-tighter">Snapshot</span>
-                                                    <span className="text-[10px] text-gray-400">
-                                                        {new Date(version.timestamp).toLocaleString()}
-                                                    </span>
+                                                    <div className="flex items-center gap-2">
+                                                        <span className="text-[10px] text-gray-400">
+                                                            {new Date(version.timestamp).toLocaleString()}
+                                                        </span>
+                                                        <button
+                                                            onClick={(e) => deleteVersion(e, version.id)}
+                                                            className="p-1 text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-full transition-colors"
+                                                            title="Delete Version"
+                                                        >
+                                                            <Icons.X className="w-3 h-3" />
+                                                        </button>
+                                                    </div>
                                                 </div>
-                                                <p className="text-xs text-gray-600 dark:text-gray-400 line-clamp-2 italic">
+                                                <p className="text-xs text-gray-600 dark:text-gray-400 line-clamp-2 italic pr-4">
                                                     {version.text.replace(/<[^>]*>/g, '').substring(0, 100)}...
                                                 </p>
                                                 <div className="mt-2 flex justify-end opacity-0 group-hover:opacity-100 transition-opacity">
@@ -450,7 +561,7 @@ const CaseStudyPage = ({ data, navigation }) => {
                                     className="flex items-center gap-1.5 px-3 py-1 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-all active:scale-95 shadow-sm shadow-purple-200 dark:shadow-none"
                                 >
                                     <Icons.Save className="w-3.5 h-3.5" />
-                                    <span className="text-[10px] font-bold uppercase">Snapshot</span>
+                                    <span className="text-[10px] font-bold uppercase">Save</span>
                                 </button>
                             </div>
                         </div>
@@ -480,7 +591,10 @@ const CaseStudyPage = ({ data, navigation }) => {
                                 <button
                                     onMouseDown={(e) => e.preventDefault()}
                                     onClick={() => execCommand('bold')}
-                                    className="p-2 hover:bg-white dark:hover:bg-gray-700 rounded-lg text-gray-600 dark:text-gray-300 transition-all hover:shadow-sm active:scale-95"
+                                    className={`p-2 rounded-lg transition-all hover:shadow-sm active:scale-95 ${activeFormats.bold
+                                        ? 'bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-400'
+                                        : 'hover:bg-white dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300'
+                                        }`}
                                     title="Bold"
                                 >
                                     <Icons.Bold />
@@ -488,7 +602,10 @@ const CaseStudyPage = ({ data, navigation }) => {
                                 <button
                                     onMouseDown={(e) => e.preventDefault()}
                                     onClick={() => execCommand('italic')}
-                                    className="p-2 hover:bg-white dark:hover:bg-gray-700 rounded-lg text-gray-600 dark:text-gray-300 transition-all hover:shadow-sm active:scale-95"
+                                    className={`p-2 rounded-lg transition-all hover:shadow-sm active:scale-95 ${activeFormats.italic
+                                        ? 'bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-400'
+                                        : 'hover:bg-white dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300'
+                                        }`}
                                     title="Italic"
                                 >
                                     <Icons.Italic />
@@ -499,7 +616,10 @@ const CaseStudyPage = ({ data, navigation }) => {
                                 <button
                                     onMouseDown={(e) => e.preventDefault()}
                                     onClick={() => execCommand('formatBlock', 'h2')}
-                                    className="p-2 hover:bg-white dark:hover:bg-gray-700 rounded-lg text-gray-600 dark:text-gray-300 transition-all hover:shadow-sm active:scale-95 flex items-center justify-center font-bold"
+                                    className={`p-2 rounded-lg transition-all hover:shadow-sm active:scale-95 flex items-center justify-center font-bold ${activeFormats.element === 'h2'
+                                        ? 'bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-400'
+                                        : 'hover:bg-white dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300'
+                                        }`}
                                     title="Heading"
                                 >
                                     H
@@ -507,7 +627,10 @@ const CaseStudyPage = ({ data, navigation }) => {
                                 <button
                                     onMouseDown={(e) => e.preventDefault()}
                                     onClick={() => execCommand('formatBlock', 'p')}
-                                    className="p-2 hover:bg-white dark:hover:bg-gray-700 rounded-lg text-gray-600 dark:text-gray-300 transition-all hover:shadow-sm active:scale-95 font-bold text-xs"
+                                    className={`p-2 rounded-lg transition-all hover:shadow-sm active:scale-95 font-bold text-xs ${activeFormats.element === 'p' || activeFormats.element === 'div' // 'div' can sometimes be default depending on browser
+                                        ? 'bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-400'
+                                        : 'hover:bg-white dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300'
+                                        }`}
                                     title="Paragraph"
                                 >
                                     P
@@ -518,7 +641,10 @@ const CaseStudyPage = ({ data, navigation }) => {
                                 <button
                                     onMouseDown={(e) => e.preventDefault()}
                                     onClick={() => execCommand('insertUnorderedList')}
-                                    className="p-2 hover:bg-white dark:hover:bg-gray-700 rounded-lg text-gray-600 dark:text-gray-300 transition-all hover:shadow-sm active:scale-95"
+                                    className={`p-2 rounded-lg transition-all hover:shadow-sm active:scale-95 ${activeFormats.ul
+                                        ? 'bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-400'
+                                        : 'hover:bg-white dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300'
+                                        }`}
                                     title="Bullet List"
                                 >
                                     <Icons.List />
@@ -526,7 +652,10 @@ const CaseStudyPage = ({ data, navigation }) => {
                                 <button
                                     onMouseDown={(e) => e.preventDefault()}
                                     onClick={() => execCommand('insertOrderedList')}
-                                    className="p-2 hover:bg-white dark:hover:bg-gray-700 rounded-lg text-gray-600 dark:text-gray-300 transition-all hover:shadow-sm active:scale-95"
+                                    className={`p-2 rounded-lg transition-all hover:shadow-sm active:scale-95 ${activeFormats.ol
+                                        ? 'bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-400'
+                                        : 'hover:bg-white dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300'
+                                        }`}
                                     title="Numbered List"
                                 >
                                     <Icons.ListOrdered />
@@ -558,8 +687,11 @@ const CaseStudyPage = ({ data, navigation }) => {
                                         <button
                                             key={color}
                                             onMouseDown={(e) => e.preventDefault()}
-                                            onClick={() => applyColor(color)}
-                                            className="w-5 h-5 rounded-full border border-gray-200 dark:border-gray-600 shadow-sm transition-transform hover:scale-125"
+                                            onClick={() => applyColor(color, true)}
+                                            className={`w-5 h-5 rounded-full border shadow-sm transition-transform hover:scale-125 ${activeFormats.color === color
+                                                ? 'ring-2 ring-offset-2 ring-blue-500 border-transparent'
+                                                : 'border-gray-200 dark:border-gray-600'
+                                                }`}
                                             style={{ backgroundColor: color }}
                                             title={`Color ${color}`}
                                         />
@@ -572,12 +704,12 @@ const CaseStudyPage = ({ data, navigation }) => {
                                         >
                                             <div className="flex flex-col items-center gap-0.5 pointer-events-none">
                                                 <Icons.Palette />
-                                                <div className="w-3 h-0.5 rounded-full" style={{ backgroundColor: selectedColor }}></div>
+                                                <div className="w-3 h-0.5 rounded-full transition-colors duration-200" style={{ backgroundColor: activeFormats.color }}></div>
                                             </div>
                                             <input
                                                 type="color"
                                                 className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
-                                                value={selectedColor}
+                                                value={activeFormats.color}
                                                 onInput={(e) => {
                                                     const color = e.target.value;
                                                     setSelectedColor(color);
@@ -601,6 +733,9 @@ const CaseStudyPage = ({ data, navigation }) => {
                                 fontFamily: 'Inter, system-ui, sans-serif',
                                 caretColor: '#3B82F6'
                             }}
+                            onKeyUp={checkFormats}
+                            onMouseUp={checkFormats}
+                            onClick={checkFormats}
                             onKeyDown={(e) => {
                                 if (e.key === 'Tab') {
                                     e.preventDefault();

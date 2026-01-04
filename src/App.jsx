@@ -16,6 +16,7 @@ import ProtectedRoute from './ProtectedRoute';
 import CompilerPage from './pages/CompilerPage';
 import LoadingPage from './pages/LoadingPage';
 import AdminMonitor from './pages/Admin/AdminMonitor';
+import CaseStudyMonitor from './pages/Admin/CaseStudyMonitor';
 import CpuApp from './pages/Visual/Cpu/CpuApp';
 const HomePage = lazy(() => import('./pages/HomePage'));
 const NotFoundPage = lazy(() => import('./pages/NotFoundPage'));
@@ -78,6 +79,7 @@ function App() {
               <Route path="/" element={<HomePage />} />
               <Route path="/admin" element={<ProtectedRoute requireAdmin={true}><TestsList /></ProtectedRoute>} />
               <Route path="/adminmonitor" element={<ProtectedRoute requireAdmin={true}><AdminMonitor /></ProtectedRoute>} />
+              <Route path="/adminmonitor/casestudies" element={<ProtectedRoute requireAdmin={true}><CaseStudyMonitor /></ProtectedRoute>} />
               <Route path="/testedit/:testId" element={<ProtectedRoute requireAdmin={true}><TestManage /></ProtectedRoute>} />
 
               <Route path="/problem/:course/:subcourse/:questionId" element={<ProtectedRoute > <DynamicComponent /></ProtectedRoute>} />

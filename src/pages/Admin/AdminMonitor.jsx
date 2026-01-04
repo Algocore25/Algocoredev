@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { ref, onValue, get } from 'firebase/database';
+import { ref, onValue, get, query, orderByKey, limitToFirst, startAfter } from 'firebase/database';
 import { database } from '../../firebase';
 import {
   FiUser,
@@ -53,15 +53,16 @@ const AdminMonitor = () => {
   const [selectedSubmission, setSelectedSubmission] = useState(null);
 
   const [Students, setStudents] = useState([]);
-  
+
   const [loadingStates, setLoadingStates] = useState({
-    submissions: true,
-    userProgress: true,
-    users: true,
+    details: true,
     courses: true,
-    activityTime: true,
-    students: true
   });
+
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [lastUserKey, setLastUserKey] = useState(null);
+  const [hasMore, setHasMore] = useState(true);
+  const [scanStats, setScanStats] = useState({ scanned: 0, found: 0 });
 
 
   const [filters, setFilters] = useState({
@@ -70,58 +71,145 @@ const AdminMonitor = () => {
     sortOrder: 'asc' // 'asc' or 'desc'
   });
 
-  // Extract fetch logic into reusable function
-  const fetchAllData = useCallback(async () => {
+  // Fetch course structure and first page of users
+  const fetchInitialData = useCallback(async () => {
     try {
-      const [
-        submissionsSnap,
-        progressSnap,
-        usersSnap,
-        coursesSnap,
-        studentsSnap,
-        activityTimeSnap
-      ] = await Promise.all([
-        get(ref(database, 'Submissions')),
-        get(ref(database, 'userprogress')),
-        get(ref(database, 'users')),
+      setLoading(true);
+
+      // 1. Fetch lightweight structure (Courses) and Students list
+      const [coursesSnap, studentsSnap] = await Promise.all([
         get(ref(database, 'AlgoCore')),
-        get(ref(database, 'Students')),
-        get(ref(database, 'Activitytime'))
+        get(ref(database, 'Students'))
       ]);
 
-      // Set all data at once
-      setSubmissions(submissionsSnap.val() || {});
-      setUserProgress(progressSnap.val() || {});
-      setUsers(usersSnap.val() || {});
       setCourses(coursesSnap.val() || {});
       setStudents(studentsSnap.val() || []);
-      setActivityTime(activityTimeSnap.val() || {});
-      
-      // Batch loading state updates
-      setLoadingStates({
-        submissions: false,
-        userProgress: false,
-        users: false,
-        courses: false,
-        students: false,
-        activityTime: false
-      });
+      setLoadingStates(prev => ({ ...prev, courses: false }));
 
+      // 2. Fetch first page of users (Limit 20)
+      const usersQuery = query(ref(database, 'users'), orderByKey(), limitToFirst(20));
+      const usersSnap = await get(usersQuery);
+
+      const usersData = usersSnap.val() || {};
+      const userKeys = Object.keys(usersData);
+
+      setUsers(usersData);
+
+      // 3. fetchUserData and Smart Scan logic will be handled by a unified function
+      // checking the first batch manually to init
+      if (userKeys.length > 0) {
+        setLastUserKey(userKeys[userKeys.length - 1]);
+        setHasMore(userKeys.length === 20);
+        setScanStats(prev => ({ ...prev, scanned: userKeys.length }));
+
+        await loadUserData(userKeys);
+
+        // Check if we need to auto-load more because we found 0 students
+        // We can't easily check "found" count here synchronously due to setUsers being async-ish in updates
+        // But we can check filteredUsers in a useEffect or just let user click Load More if empty.
+        // Better: Let's run a "Smart Scan" init
+      } else {
+        setHasMore(false);
+      }
+
+      setLoading(false);
+      setLoadingStates(prev => ({ ...prev, details: false }));
       setRefreshing(false);
     } catch (error) {
-      console.error('Error fetching data:', error);
+      console.error('Error fetching initial data:', error);
       setLoading(false);
       setRefreshing(false);
     }
   }, []);
 
+  const loadUserData = async (uids) => {
+    // In parallel, fetch submissions, progress, and activity for these specific UIDs
+    const promises = uids.map(async (uid) => {
+      const [subSnap, progSnap, actSnap] = await Promise.all([
+        get(ref(database, `Submissions/${uid}`)),
+        get(ref(database, `userprogress/${uid}`)),
+        get(ref(database, `Activitytime/${uid}`))
+      ]);
+
+      return {
+        uid,
+        submissions: subSnap.val(),
+        progress: progSnap.val(),
+        activity: actSnap.val()
+      };
+    });
+
+    const results = await Promise.all(promises);
+
+    setSubmissions(prev => {
+      const next = { ...prev };
+      results.forEach(r => { if (r.submissions) next[r.uid] = r.submissions; });
+      return next;
+    });
+
+    setUserProgress(prev => {
+      const next = { ...prev };
+      results.forEach(r => { if (r.progress) next[r.uid] = r.progress; });
+      return next;
+    });
+
+    setActivityTime(prev => {
+      const next = { ...prev };
+      results.forEach(r => { if (r.activity) next[r.uid] = r.activity; });
+      return next;
+    });
+  };
+
+  const loadMoreUsers = async () => {
+    if (!lastUserKey || loadingMore) return;
+
+    setLoadingMore(true);
+    try {
+      // Fetch next batch
+      const usersQuery = query(
+        ref(database, 'users'),
+        orderByKey(),
+        startAfter(lastUserKey),
+        limitToFirst(20)
+      );
+
+      const usersSnap = await get(usersQuery);
+      const usersData = usersSnap.val() || {};
+      const userKeys = Object.keys(usersData);
+
+      if (userKeys.length > 0) {
+        setUsers(prev => ({ ...prev, ...usersData }));
+        setLastUserKey(userKeys[userKeys.length - 1]);
+        setHasMore(userKeys.length === 20);
+        setScanStats(prev => ({ ...prev, scanned: prev.scanned + userKeys.length }));
+
+        await loadUserData(userKeys);
+      } else {
+        setHasMore(false);
+      }
+    } catch (error) {
+      console.error("Error loading more users:", error);
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+
   const handleRefresh = async () => {
     setRefreshing(true);
-    await fetchAllData();
+    // Reset Everything
+    setSubmissions({});
+    setUserProgress({});
+    setUsers({});
+    setActivityTime({});
+    setActivityTime({});
+    setLastUserKey(null);
+    setHasMore(true);
+    setScanStats({ scanned: 0, found: 0 });
+    await fetchInitialData();
   };
 
   useEffect(() => {
-    fetchAllData();
+    fetchInitialData();
 
     // Disabled real-time listeners for better performance
     // Uncomment if you need real-time updates
@@ -208,9 +296,9 @@ const AdminMonitor = () => {
 
     // FIRST: Process ALL users from the users object
     Object.entries(users).forEach(([userId, userDetails]) => {
-      
+
       if (!studentEmailSet.has(userDetails.email)) return; // O(1) instead of O(n)
-      
+
       processedUsers[userId] = {
         id: userId,
         name: userDetails.name || 'Anonymous',
@@ -438,15 +526,15 @@ const AdminMonitor = () => {
   // Update filteredUsers to include sorting (optimized)
   const filteredUsers = React.useMemo(() => {
     if (!processedData.users || processedData.users.length === 0) return [];
-    
+
     const searchLower = filters.search.toLowerCase();
     const filtered = searchLower
-      ? processedData.users.filter(user => 
-          user.name.toLowerCase().includes(searchLower) ||
-          user.email.toLowerCase().includes(searchLower)
-        )
+      ? processedData.users.filter(user =>
+        user.name.toLowerCase().includes(searchLower) ||
+        user.email.toLowerCase().includes(searchLower)
+      )
       : processedData.users;
-    
+
     return sortUsers(filtered);
   }, [processedData.users, filters.search, sortUsers]);
 
@@ -501,7 +589,7 @@ const AdminMonitor = () => {
   const loadedCount = Object.values(loadingStates).filter(state => !state).length;
   const totalCount = Object.keys(loadingStates).length;
   const loadingPercentage = Math.round((loadedCount / totalCount) * 100);
-  
+
   // Get currently loading item
   const currentlyLoading = Object.entries(loadingStates)
     .find(([key, isLoading]) => isLoading)?.[0] || 'Complete';
@@ -512,7 +600,7 @@ const AdminMonitor = () => {
       {(loading || refreshing) && (
         <div className="fixed top-0 left-0 right-0 z-50 group">
           <div className="h-1 bg-gray-200 dark:bg-gray-700 relative overflow-hidden">
-            <div 
+            <div
               className="h-full bg-gradient-to-r from-blue-500 via-purple-500 to-pink-500 transition-all duration-300 ease-out relative"
               style={{ width: `${loadingPercentage}%` }}
             >
@@ -520,7 +608,7 @@ const AdminMonitor = () => {
               <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white to-transparent opacity-30 animate-shimmer"></div>
             </div>
             {/* Percentage indicator on bar */}
-            <div 
+            <div
               className="absolute top-0 h-full flex items-center text-[10px] font-bold text-white transition-all duration-300 px-1"
               style={{ left: `${Math.max(2, Math.min(95, loadingPercentage))}%` }}
             >
@@ -664,126 +752,146 @@ const AdminMonitor = () => {
               ))
             ) : (
               filteredUsers.map(user => (
-              <motion.div
-                key={user.id}
-                layout
-                initial={{ opacity: 0, scale: 0.9 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.9 }}
-                transition={{ duration: 0.3 }}
-                className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 hover:shadow-md transition-shadow"
-              >
-                <div className="p-6">
-                  {/* User header */}
-                  <div className="flex items-center justify-between mb-4">
-                    <div className="flex items-center">
-                      <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center overflow-hidden">
-                        {user?.photo ? (
-                          <img
-                            src={user.photo}
-                            alt={user.name || "User"}
-                            className="w-full h-full object-cover"
-                          />
-                        ) : (
-                          <FiUser className="text-blue-600" />
-                        )}
-                      </div>
-
-                      <div className="ml-3">
-                        <h3 className="text-lg font-semibold text-gray-900 dark:text-zinc-300">{user.name}</h3>
-                        <p className="text-sm text-gray-600 dark:text-zinc-400">{user.email}</p>
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => setSelectedUser(user)}
-                      className="p-2 text-gray-400 hover:text-blue-600 transition-colors"
-                    >
-                      <FiEye size={20} />
-                    </button>
-                  </div>
-
-                  {/* Stats */}
-                  <div className="grid grid-cols-3 gap-3 mb-4">
-                    <div className="text-center">
-                      <div className="text-2xl font-bold text-gray-900 dark:text-white">{user.stats.attempted}</div>
-                      <div className="text-xs text-gray-600 dark:text-gray-300">Attempted</div>
-                    </div>
-                    <div className="text-center">
-                      <div className="text-base font-semibold text-blue-600 dark:text-blue-400">
-                        {user.lastActivity ? (
-                          <div className="flex flex-col items-center">
-                            <FiActivity className="text-blue-600 dark:text-blue-400 mb-1" size={18} />
-                            <span className="text-[10px]">{new Date(user.lastActivity).toLocaleDateString()}</span>
-                            <span className="text-[10px] text-gray-500 dark:text-gray-400">
-                              {new Date(user.lastActivity).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
-                            </span>
-                          </div>
-                        ) : (
-                          <span className="text-xs text-gray-400">No activity</span>
-                        )}
-                      </div>
-                      <div className="text-xs text-gray-600 dark:text-gray-300 mt-1">Last Active</div>
-                    </div>
-                    <div className="text-center">
-                      <div className="text-base font-semibold text-green-600 dark:text-green-400">
-                        {user.activeTime > 0 ? (
-                          <div className="flex flex-col items-center">
-                            <FiClock className="text-green-600 dark:text-green-400 mb-1" size={18} />
-                            <span className="text-xs font-bold">
-                              {Math.floor(user.activeTime / (1000 * 60 * 60))}h {Math.floor((user.activeTime % (1000 * 60 * 60)) / (1000 * 60))}m
-                            </span>
-                          </div>
-                        ) : (
-                          <span className="text-xs text-gray-400">0h 0m</span>
-                        )}
-                      </div>
-                      <div className="text-xs text-gray-600 dark:text-gray-300 mt-1">Time Spent</div>
-                    </div>
-                  </div>
-
-                  {/* Overall Progress */}
-                  <div className="mt-4 mb-6">
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Overall Progress</span>
-                      <span className="text-sm font-bold text-gray-900 dark:text-white">
-                        {user.overallProgress ? formatPercentage(user.overallProgress.percentage) : '0.0%'}
-                      </span>
-                    </div>
-                    <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-3">
-                      <div
-                        className="bg-blue-600 dark:bg-blue-500 h-3 rounded-full transition-all duration-300"
-                        style={{
-                          width: `${user.overallProgress ?
-                            Math.min(100, Math.max(0, parseFloat(user.overallProgress.percentage) || 0)) : 0}%`
-                        }}
-                      ></div>
-                    </div>
-                  </div>
-
-
-                  {/* Course Progress */}
-                  <div className="space-y-2">
-                    {sortedCourseNames.map(course => {
-                      const progress = user.courseProgress && user.courseProgress[course] ?
-                        user.courseProgress[course] : { percentage: '0.0', completed: 0, total: 0 };
-
-                      return (
-                        <div key={course} className="flex items-center justify-between text-sm">
-                          <span className="text-gray-600 dark:text-gray-400">{course}</span>
-                          <span className="font-medium text-blue-600 dark:text-blue-400">
-                            {formatPercentage(progress.percentage)}
-                          </span>
+                <motion.div
+                  key={user.id}
+                  layout
+                  initial={{ opacity: 0, scale: 0.9 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.9 }}
+                  transition={{ duration: 0.3 }}
+                  className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 hover:shadow-md transition-shadow"
+                >
+                  <div className="p-6">
+                    {/* User header */}
+                    <div className="flex items-center justify-between mb-4">
+                      <div className="flex items-center">
+                        <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center overflow-hidden">
+                          {user?.photo ? (
+                            <img
+                              src={user.photo}
+                              alt={user.name || "User"}
+                              className="w-full h-full object-cover"
+                            />
+                          ) : (
+                            <FiUser className="text-blue-600" />
+                          )}
                         </div>
-                      );
-                    })}
-                  </div>
 
-                </div>
-              </motion.div>
+                        <div className="ml-3">
+                          <h3 className="text-lg font-semibold text-gray-900 dark:text-zinc-300">{user.name}</h3>
+                          <p className="text-sm text-gray-600 dark:text-zinc-400">{user.email}</p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => setSelectedUser(user)}
+                        className="p-2 text-gray-400 hover:text-blue-600 transition-colors"
+                      >
+                        <FiEye size={20} />
+                      </button>
+                    </div>
+
+                    {/* Stats */}
+                    <div className="grid grid-cols-3 gap-3 mb-4">
+                      <div className="text-center">
+                        <div className="text-2xl font-bold text-gray-900 dark:text-white">{user.stats.attempted}</div>
+                        <div className="text-xs text-gray-600 dark:text-gray-300">Attempted</div>
+                      </div>
+                      <div className="text-center">
+                        <div className="text-base font-semibold text-blue-600 dark:text-blue-400">
+                          {user.lastActivity ? (
+                            <div className="flex flex-col items-center">
+                              <FiActivity className="text-blue-600 dark:text-blue-400 mb-1" size={18} />
+                              <span className="text-[10px]">{new Date(user.lastActivity).toLocaleDateString()}</span>
+                              <span className="text-[10px] text-gray-500 dark:text-gray-400">
+                                {new Date(user.lastActivity).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                              </span>
+                            </div>
+                          ) : (
+                            <span className="text-xs text-gray-400">No activity</span>
+                          )}
+                        </div>
+                        <div className="text-xs text-gray-600 dark:text-gray-300 mt-1">Last Active</div>
+                      </div>
+                      <div className="text-center">
+                        <div className="text-base font-semibold text-green-600 dark:text-green-400">
+                          {user.activeTime > 0 ? (
+                            <div className="flex flex-col items-center">
+                              <FiClock className="text-green-600 dark:text-green-400 mb-1" size={18} />
+                              <span className="text-xs font-bold">
+                                {Math.floor(user.activeTime / (1000 * 60 * 60))}h {Math.floor((user.activeTime % (1000 * 60 * 60)) / (1000 * 60))}m
+                              </span>
+                            </div>
+                          ) : (
+                            <span className="text-xs text-gray-400">0h 0m</span>
+                          )}
+                        </div>
+                        <div className="text-xs text-gray-600 dark:text-gray-300 mt-1">Time Spent</div>
+                      </div>
+                    </div>
+
+                    {/* Overall Progress */}
+                    <div className="mt-4 mb-6">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Overall Progress</span>
+                        <span className="text-sm font-bold text-gray-900 dark:text-white">
+                          {user.overallProgress ? formatPercentage(user.overallProgress.percentage) : '0.0%'}
+                        </span>
+                      </div>
+                      <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-3">
+                        <div
+                          className="bg-blue-600 dark:bg-blue-500 h-3 rounded-full transition-all duration-300"
+                          style={{
+                            width: `${user.overallProgress ?
+                              Math.min(100, Math.max(0, parseFloat(user.overallProgress.percentage) || 0)) : 0}%`
+                          }}
+                        ></div>
+                      </div>
+                    </div>
+
+
+                    {/* Course Progress */}
+                    <div className="space-y-2">
+                      {sortedCourseNames.map(course => {
+                        const progress = user.courseProgress && user.courseProgress[course] ?
+                          user.courseProgress[course] : { percentage: '0.0', completed: 0, total: 0 };
+
+                        return (
+                          <div key={course} className="flex items-center justify-between text-sm">
+                            <span className="text-gray-600 dark:text-gray-400">{course}</span>
+                            <span className="font-medium text-blue-600 dark:text-blue-400">
+                              {formatPercentage(progress.percentage)}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                  </div>
+                </motion.div>
               ))
             )}
           </AnimatePresence>
         </motion.div>
+
+        {/* Load More Button */}
+        {hasMore && !loading && (
+          <div className="flex flex-col items-center mt-8 pb-8 gap-2">
+            <button
+              onClick={loadMoreUsers}
+              disabled={loadingMore}
+              className="px-6 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white rounded-lg font-medium transition-colors flex items-center gap-2"
+            >
+              {loadingMore ? (
+                <>
+                  <FiRefreshCw className="animate-spin" />
+                  Scanning DB...
+                </>
+              ) : (
+                'Load More Users'
+              )}
+            </button>
+          </div>
+        )}
       </div>
 
       {/* User Detail Modal */}
